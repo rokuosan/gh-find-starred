@@ -1,0 +1,13 @@
+version: "3"
+
+tasks:
+  default:
+    silent: true
+    cmds:
+      - task --list-all
+
+  run:
+    silent: true
+    cmds:
+      - go build
+      - gh find-starred {{.CLI_ARGS}}
