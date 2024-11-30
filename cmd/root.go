@@ -8,8 +8,8 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "hugo",
-	Short: "Hugo is a very fast static site generator",
+	Use:   "gh-find-starred",
+	Short: "gh-find-starred is a GitHub CLI extension to find your starred repositories.",
 	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("hi world, this is the gh-find-starred extension!")
