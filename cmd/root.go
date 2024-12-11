@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/cli/go-gh/v2/pkg/config"
 	"github.com/rokuosan/gh-find-starred/internal/github"
 	"github.com/spf13/cobra"
 )
@@ -39,15 +40,19 @@ func (i RepositoryListItem) FilterValue() string { return i.Name }
 
 type errMsg error
 
-type FetchRepositoryMessage github.GetStarredRepositoriesResult
+type FetchRepositoryMessage struct {
+	Result     github.GetStarredRepositoriesResult
+	IsCacheHit bool
+}
 
 type model struct {
-	spinner  spinner.Model
-	quitting bool
-	err      error
-	loading  bool
-	repos    []github.Repository
-	cursor   string
+	spinner    spinner.Model
+	quitting   bool
+	err        error
+	loading    bool
+	repos      []github.Repository
+	cursor     string
+	isCacheHit bool
 }
 
 func initialModel() model {
@@ -72,11 +77,16 @@ func (m model) Init() tea.Cmd {
 
 func (m model) GetRepositoriesFromGitHub() tea.Msg {
 	// キャッシュを取得
-	if repos, err := github.GetStarredRepositoriesFromCache(); err == nil {
-		return FetchRepositoryMessage(github.GetStarredRepositoriesResult{
-			Repositories: repos,
-			PageInfo:     github.PageInfo{},
-		})
+	if len(m.repos) == 0 {
+		if repos, err := github.GetStarredRepositoriesFromCache(); err == nil {
+			return FetchRepositoryMessage{
+				Result: github.GetStarredRepositoriesResult{
+					Repositories: repos,
+					PageInfo:     github.PageInfo{},
+				},
+				IsCacheHit: true,
+			}
+		}
 	}
 
 	// 現在のカーソルからリポジトリを取得する
@@ -85,7 +95,9 @@ func (m model) GetRepositoriesFromGitHub() tea.Msg {
 		return errMsg(err)
 	}
 	// 取得したリポジトリを返す
-	return FetchRepositoryMessage(result)
+	return FetchRepositoryMessage{
+		Result: result,
+	}
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -98,12 +110,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case FetchRepositoryMessage:
-		var cmd tea.Cmd
-		m.repos = append(m.repos, msg.Repositories...)
-		m.cursor = msg.PageInfo.EndCursor
+		var cmd tea.Cmd = nil
+		m.repos = append(m.repos, msg.Result.Repositories...)
+		m.cursor = msg.Result.PageInfo.EndCursor
+		if msg.IsCacheHit {
+			m.isCacheHit = true
+		}
 
-		if msg.PageInfo.HasNextPage {
+		if msg.Result.PageInfo.HasNextPage {
 			cmd = m.GetRepositoriesFromGitHub
+		} else {
+			m.loading = false
+			if !m.isCacheHit {
+				path := fmt.Sprintf("%s/starred_repositories.json", config.CacheDir())
+				if err := Cache(path, m.repos); err != nil {
+					return m, func() tea.Msg { return errMsg(err) }
+				}
+			}
 		}
 
 		return m, cmd
