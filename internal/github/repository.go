@@ -1,7 +1,13 @@
 package github
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"time"
+
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/cli/go-gh/v2/pkg/config"
 	gql "github.com/cli/shurcooL-graphql"
 )
 
@@ -103,4 +109,40 @@ func (r Repositories) Search(query string, opt *SearchRepositoryOptions) SearchR
 		}
 	}
 	return results
+}
+
+func GetStarredRepositoriesFromCache() ([]Repository, error) {
+	path := fmt.Sprintf("%s/starred_repositories.json", config.CacheDir())
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	var cacheData struct {
+		ExpiresAt string       `json:"expires_at"`
+		CreatedAt string       `json:"created_at"`
+		Data      []Repository `json:"data"`
+	}
+
+	err = decoder.Decode(&cacheData)
+	if err != nil {
+		return nil, err
+	}
+	expiresAt, err := time.Parse(time.RFC3339, cacheData.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+
+	if time.Now().After(expiresAt) {
+		return nil, nil
+	}
+
+	respositories := make([]Repository, len(cacheData.Data))
+	for i, d := range cacheData.Data {
+		respositories[i] = d
+	}
+
+	return respositories, nil
 }

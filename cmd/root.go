@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/cli/go-gh/v2/pkg/config"
 	"github.com/rokuosan/gh-find-starred/internal/github"
 	"github.com/spf13/cobra"
 )
@@ -73,30 +72,11 @@ func (m model) Init() tea.Cmd {
 
 func (m model) GetRepositoriesFromGitHub() tea.Msg {
 	// キャッシュを取得
-	dir := config.CacheDir()
-	path := fmt.Sprintf("%s/starred_repositories.json", dir)
-	if f, err := os.Open(path); err == nil {
-		defer f.Close()
-		var cacheData struct {
-			ExpiresAt string              `json:"expires_at"`
-			CreatedAt string              `json:"created_at"`
-			Data      []github.Repository `json:"data"`
-		}
-		if err := json.NewDecoder(f).Decode(&cacheData); err == nil {
-			// キャッシュが有効であればリポジトリを返す
-			if expiresAt, err := time.Parse(time.RFC3339, cacheData.ExpiresAt); err == nil {
-				if time.Now().Before(expiresAt) {
-					repos := make([]github.Repository, len(cacheData.Data))
-					for i, d := range cacheData.Data {
-						repos[i] = d
-					}
-					return FetchRepositoryMessage(github.GetStarredRepositoriesResult{
-						Repositories: repos,
-						PageInfo:     github.PageInfo{HasNextPage: false},
-					})
-				}
-			}
-		}
+	if repos, err := github.GetStarredRepositoriesFromCache(); err == nil {
+		return FetchRepositoryMessage(github.GetStarredRepositoriesResult{
+			Repositories: repos,
+			PageInfo:     github.PageInfo{},
+		})
 	}
 
 	// 現在のカーソルからリポジトリを取得する
