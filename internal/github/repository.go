@@ -79,6 +79,7 @@ func GetStarredRepositories(after string) (GetStarredRepositoriesResult, error) 
 type Repositories []Repository
 
 type SearchRepositoryOptions struct {
+	IncludeName        bool
 	IncludeDescription bool
 	IncludeREADME      bool
 }
