@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -18,8 +19,9 @@ var rootCmd = &cobra.Command{
 	Use:   "gh-find-starred",
 	Short: "gh-find-starred is a GitHub CLI extension to find your starred repositories.",
 	Long:  ``,
+	Args:  cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		p := tea.NewProgram(initialModel())
+		p := tea.NewProgram(initialModel(args))
 		if _, err := p.Run(); err != nil {
 			fmt.Println(err)
 			os.Exit(1)
@@ -45,17 +47,24 @@ type FetchRepositoryMessage struct {
 	IsCacheHit bool
 }
 
-type model struct {
-	spinner    spinner.Model
-	quitting   bool
-	err        error
-	loading    bool
-	repos      []github.Repository
-	cursor     string
-	isCacheHit bool
+type SearchMsg struct {
+	Result github.SearchRepositoryResult
 }
 
-func initialModel() model {
+type model struct {
+	spinner      spinner.Model
+	quitting     bool
+	err          error
+	loading      bool
+	repos        []github.Repository
+	cursor       string
+	isCacheHit   bool
+	words        []string
+	searching    bool
+	searchResult github.SearchRepositoryResult
+}
+
+func initialModel(args []string) model {
 	// スピナーを初期化
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -65,6 +74,7 @@ func initialModel() model {
 	return model{
 		spinner: s,
 		loading: true,
+		words:   args,
 	}
 }
 
@@ -100,6 +110,17 @@ func (m model) GetRepositoriesFromGitHub() tea.Msg {
 	}
 }
 
+func (m model) SearchRepositories() tea.Msg {
+	// 検索結果を返す
+	repositories := github.Repositories(m.repos)
+	result := repositories.Search(m.words, &github.SearchRepositoryOptions{
+		IncludeName:        true,
+		IncludeDescription: true,
+		IncludeREADME:      true,
+	})
+	return SearchMsg{Result: result}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -129,7 +150,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// 検索を実行
+		if cmd == nil {
+			cmd = m.SearchRepositories
+			m.searching = true
+		}
+
 		return m, cmd
+
+	case SearchMsg:
+		m.searching = false
+		m.searchResult = msg.Result
+		return m, tea.Quit
 
 	case errMsg:
 		m.err = msg
@@ -139,7 +171,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
-
 	}
 
 	return m, nil
@@ -157,8 +188,15 @@ func (m model) View() string {
 		str := fmt.Sprintf("%s Collecting your starred repositories: %d\n", m.spinner.View(), count)
 		return str
 	}
+	if m.searching {
+		return fmt.Sprintf("%s Searching...\n", m.spinner.View())
+	}
 
-	return ""
+	var b strings.Builder
+	for _, r := range m.searchResult {
+		b.WriteString(fmt.Sprintf("%3d %s(%s)\n", r.Point, r.Repository.Name, r.Repository.Url))
+	}
+	return b.String()
 }
 
 type CacheData struct {
