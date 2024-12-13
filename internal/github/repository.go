@@ -145,13 +145,13 @@ func (r Repositories) SearchByBleve(query []string, opt *SearchRepositoryOptions
 	}
 
 	// ポイントの高い順にソート
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[i].Point < results[j].Point {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	// for i := 0; i < len(results); i++ {
+	// 	for j := i + 1; j < len(results); j++ {
+	// 		if results[i].Point < results[j].Point {
+	// 			results[i], results[j] = results[j], results[i]
+	// 		}
+	// 	}
+	// }
 
 	return results
 }
