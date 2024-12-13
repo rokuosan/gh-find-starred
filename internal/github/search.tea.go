@@ -35,6 +35,7 @@ func NewDefaultSearchModel(query []string) SearchModel {
 func (m SearchModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.Spinner.Tick,
+		m.Search,
 	)
 }
 

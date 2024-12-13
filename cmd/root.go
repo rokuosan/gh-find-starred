@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/rokuosan/gh-find-starred/internal/github"
 	"github.com/spf13/cobra"
@@ -58,11 +59,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search.Repositories = msg.Repositories
 		fetchModel, fetchCmd := m.fetch.Update(msg)
 		m.fetch = fetchModel.(github.FetchingModel)
-		return m, tea.Batch(fetchCmd, m.search.Search)
+		return m, tea.Batch(fetchCmd, m.search.Init())
 	case github.SearchFinishedMsg:
 		searchModel, searchCmd := m.search.Update(msg)
 		m.search = searchModel.(github.SearchModel)
 		return m, searchCmd
+	case spinner.TickMsg:
+		if m.fetch.Status == github.FetchStatusLoading {
+			fetchModel, fetchCmd := m.fetch.Update(msg)
+			m.fetch = fetchModel.(github.FetchingModel)
+			return m, fetchCmd
+		}
+		if m.search.Loading {
+			searchModel, searchCmd := m.search.Update(msg)
+			m.search = searchModel.(github.SearchModel)
+			return m, searchCmd
+		}
 	}
 
 	return m, nil
