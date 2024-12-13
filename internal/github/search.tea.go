@@ -22,7 +22,7 @@ type SearchFinishedMsg struct {
 }
 
 func NewDefaultSearchModel(query []string) SearchModel {
-	s := spinner.New(spinner.WithSpinner(spinner.Dot))
+	s := spinner.New(spinner.WithSpinner(spinner.Points))
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	return SearchModel{
