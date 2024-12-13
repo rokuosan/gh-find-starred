@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/blevesearch/bleve/v2"
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/config"
 	gql "github.com/cli/shurcooL-graphql"
@@ -103,7 +104,7 @@ func (s SearchRepositoryResult) Repositories() Repositories {
 
 type SearchRepositoryResultItem struct {
 	Repository Repository
-	Point      int
+	Point      float64
 }
 
 func (r Repositories) Search(query []string, opt *SearchRepositoryOptions) SearchRepositoryResult {
@@ -158,6 +159,55 @@ func (r Repositories) Search(query []string, opt *SearchRepositoryOptions) Searc
 			}
 		}
 		if point > 0 {
+			results = append(results, SearchRepositoryResultItem{
+				Repository: repo,
+				Point:      float64(point),
+			})
+		}
+	}
+
+	// ポイントの高い順にソート
+	for i := 0; i < len(results); i++ {
+		for j := i + 1; j < len(results); j++ {
+			if results[i].Point < results[j].Point {
+				results[i], results[j] = results[j], results[i]
+			}
+		}
+	}
+
+	return results
+}
+
+// SearchByBleve は、bleveを使ってリポジトリを検索する
+// Repositories.Search と同じように検索文字列に一致するリポジトリを返すが、
+// bleveを使って検索を行う。
+// 計算やポイントなどは全て異なるため、Repositories.Search とは別のメソッドとしている
+func (r Repositories) SearchByBleve(query []string, opt *SearchRepositoryOptions) SearchRepositoryResult {
+	mapping := bleve.NewIndexMapping()
+	index, err := bleve.NewMemOnly(mapping)
+	if err != nil {
+		panic(err)
+	}
+
+	nameToRepo := make(map[string]Repository)
+	for _, repo := range r {
+		nameToRepo[repo.Name] = repo
+		index.Index(repo.Name, repo)
+	}
+
+	var results SearchRepositoryResult
+	for _, q := range query {
+		q := bleve.NewQueryStringQuery(q)
+		searchRequest := bleve.NewSearchRequest(q)
+		searchResult, err := index.Search(searchRequest)
+		if err != nil {
+			panic(err)
+		}
+
+		for _, hit := range searchResult.Hits {
+			repo := nameToRepo[hit.ID]
+			point := hit.Score
+
 			results = append(results, SearchRepositoryResultItem{
 				Repository: repo,
 				Point:      point,

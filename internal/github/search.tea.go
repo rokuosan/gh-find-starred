@@ -60,14 +60,14 @@ func (m SearchModel) View() string {
 
 	var sb strings.Builder
 	for _, r := range m.Result {
-		sb.WriteString(fmt.Sprintf("%d %s %s\n", r.Point, r.Repository.Name, r.Repository.Url))
+		sb.WriteString(fmt.Sprintf("%f %s %s\n", r.Point, r.Repository.Name, r.Repository.Url))
 	}
 	return sb.String()
 
 }
 
 func (m SearchModel) Search() tea.Msg {
-	result := m.Repositories.Search(m.SearchQuery, &SearchRepositoryOptions{
+	result := m.Repositories.SearchByBleve(m.SearchQuery, &SearchRepositoryOptions{
 		IncludeName:        true,
 		IncludeDescription: true,
 		IncludeREADME:      true,
