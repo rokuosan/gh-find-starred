@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/blevesearch/bleve/v2"
@@ -125,33 +127,27 @@ func (r Repositories) SearchByBleve(query []string, opt *SearchRepositoryOptions
 	}
 
 	var results SearchRepositoryResult
-	for _, q := range query {
-		q := bleve.NewQueryStringQuery(q)
-		searchRequest := bleve.NewSearchRequest(q)
-		searchResult, err := index.Search(searchRequest)
-		if err != nil {
-			panic(err)
-		}
+	q := bleve.NewQueryStringQuery(strings.Join(query, " "))
+	searchRequest := bleve.NewSearchRequest(q)
+	searchResult, err := index.Search(searchRequest)
+	if err != nil {
+		panic(err)
+	}
 
-		for _, hit := range searchResult.Hits {
-			repo := nameToRepo[hit.ID]
-			point := hit.Score
+	for _, hit := range searchResult.Hits {
+		repo := nameToRepo[hit.ID]
+		point := hit.Score
 
-			results = append(results, SearchRepositoryResultItem{
-				Repository: repo,
-				Point:      point,
-			})
-		}
+		results = append(results, SearchRepositoryResultItem{
+			Repository: repo,
+			Point:      point,
+		})
 	}
 
 	// ポイントの高い順にソート
-	// for i := 0; i < len(results); i++ {
-	// 	for j := i + 1; j < len(results); j++ {
-	// 		if results[i].Point < results[j].Point {
-	// 			results[i], results[j] = results[j], results[i]
-	// 		}
-	// 	}
-	// }
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Point > results[j].Point
+	})
 
 	return results
 }
