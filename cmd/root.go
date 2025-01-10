@@ -60,6 +60,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		fetchModel, fetchCmd := m.fetch.Update(msg)
 		m.fetch = fetchModel.(github.FetchingModel)
 		return m, tea.Batch(fetchCmd, m.search.Init())
+	case github.FetchMsg:
+		fetchModel, fetchCmd := m.fetch.Update(msg)
+		m.fetch = fetchModel.(github.FetchingModel)
+		return m, fetchCmd
 	case github.SearchFinishedMsg:
 		searchModel, searchCmd := m.search.Update(msg)
 		m.search = searchModel.(github.SearchModel)
