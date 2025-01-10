@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.2.4
 	github.com/charmbracelet/lipgloss v1.0.0
-	github.com/cli/go-gh/v2 v2.11.1
+	github.com/cli/go-gh/v2 v2.11.2
 	github.com/cli/shurcooL-graphql v0.0.4
 	github.com/spf13/cobra v1.8.1
 )
@@ -58,7 +58,7 @@ require (
 	go.etcd.io/bbolt v1.3.7 // indirect
 	golang.org/x/sync v0.10.0 // indirect
 	golang.org/x/sys v0.28.0 // indirect
-	golang.org/x/term v0.13.0 // indirect
+	golang.org/x/term v0.27.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
