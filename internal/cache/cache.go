@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/rokuosan/gh-find-starred/pkg/api"
 )
 
 type CacheController interface {
@@ -72,4 +74,38 @@ func (c *PeriodicalCache) toJSON(data PeriodicalCacheData) ([]byte, error) {
 func (c *PeriodicalCache) write(data []byte, writer io.Writer) error {
 	_, err := writer.Write(data)
 	return err
+}
+
+type CacheData struct {
+	ExpiresAt string        `json:"expires_at"`
+	CreatedAt string        `json:"created_at"`
+	Data      []interface{} `json:"data"`
+}
+
+func Cache(path string, data api.GitHubRepositories) error {
+	now := time.Now().Format(time.RFC3339)
+	expiresAt := time.Now().Add(time.Hour * 24).Format(time.RFC3339)
+	cacheData := CacheData{
+		ExpiresAt: expiresAt,
+		CreatedAt: now,
+		Data:      make([]interface{}, len(data)),
+	}
+	for i, d := range data {
+		cacheData.Data[i] = d
+	}
+
+	// ファイルを作成
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// ファイルに書き込む
+	enc := json.NewEncoder(f)
+	if err := enc.Encode(cacheData); err != nil {
+		return err
+	}
+
+	return nil
 }

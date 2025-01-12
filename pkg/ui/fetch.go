@@ -6,6 +6,8 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/cli/go-gh/v2/pkg/config"
+	"github.com/rokuosan/gh-find-starred/internal/cache"
 	"github.com/rokuosan/gh-find-starred/pkg/api"
 )
 
@@ -24,12 +26,14 @@ type FetchingModel struct {
 	repositoryService api.RepositoryService
 	err               error
 	cursor            string
+	fromCache         bool
 }
 
 type FetchMsg struct {
 	Repositories api.GitHubRepositories
 	PageInfo     api.PageInfo
 	Err          error
+	fromCache    bool
 }
 
 func NewDefaultFetchingModel() FetchingModel {
@@ -64,6 +68,7 @@ func (m FetchingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FetchMsg:
 		if msg.Err != nil {
 			m.Status = FetchStatusFailed
+			m.err = msg.Err
 			return m, tea.Quit
 		}
 		m.Repositories = append(m.Repositories, msg.Repositories...)
@@ -73,6 +78,17 @@ func (m FetchingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// 全てのリポジトリを取得した場合は完了
 		m.Status = FetchStatusCompleted
+		// 取得したリポジトリをキャッシュする
+		m.fromCache = msg.fromCache
+		if !msg.fromCache {
+			path := fmt.Sprintf("%s/starred_repositories.json", config.CacheDir())
+			if err := cache.Cache(path, m.Repositories); err != nil {
+				m.Status = FetchStatusFailed
+				m.err = err
+				return m, tea.Quit
+			}
+		}
+
 		return m, nil
 
 	default:
@@ -83,12 +99,16 @@ func (m FetchingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m FetchingModel) View() string {
 	switch m.Status {
 	case FetchStatusFailed:
-		return fmt.Sprintf("✗ Failed to fetch starred repositories: %s\n\nError:\n%v", m.Spinner.View(), m.err)
+		return fmt.Sprintf("✗ Failed to fetch starred repositories:\nError:\n%v", m.err)
 	case FetchStatusLoading:
 		return fmt.Sprintf("%s Fetching starred repositories: %d", m.Spinner.View(), len(m.Repositories))
 	}
 
-	return fmt.Sprintf("✓ Fetched starred repositories: %d", len(m.Repositories))
+	msg := fmt.Sprintf("✓ Fetched starred repositories: %d", len(m.Repositories))
+	if m.fromCache {
+		msg += " (from cache)"
+	}
+	return msg
 }
 
 func (m FetchingModel) GetRepositoriesFromGitHub() tea.Msg {
@@ -97,6 +117,7 @@ func (m FetchingModel) GetRepositoriesFromGitHub() tea.Msg {
 		if repos, err := api.GetStarredRepositoriesFromCache(); err == nil {
 			return FetchMsg{
 				Repositories: repos,
+				fromCache:    true,
 			}
 		}
 	}
