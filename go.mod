@@ -10,7 +10,7 @@ require (
 	github.com/cli/go-gh/v2 v2.11.2
 	github.com/cli/shurcooL-graphql v0.0.4
 	github.com/spf13/cobra v1.8.1
-	github.com/stretchr/testify v1.8.1
+	github.com/stretchr/testify v1.10.0
 )
 
 require (
