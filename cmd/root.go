@@ -3,10 +3,12 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/rokuosan/gh-find-starred/internal/github"
+	"github.com/rokuosan/gh-find-starred/pkg/api"
+	"github.com/rokuosan/gh-find-starred/pkg/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -31,16 +33,16 @@ func Execute() {
 func init() {}
 
 type model struct {
-	fetch        github.FetchingModel
-	search       github.SearchModel
-	repositories github.Repositories
+	fetch        ui.FetchingModel
+	search       ui.SearchModel
+	repositories api.GitHubRepositories
 }
 
 func initialModel(args []string) model {
 	// モデルを初期化
 	return model{
-		fetch:  github.NewDefaultFetchingModel(),
-		search: github.NewDefaultSearchModel(args),
+		fetch:  ui.NewDefaultFetchingModel(),
+		search: ui.NewDefaultSearchModel(args),
 	}
 }
 
@@ -55,32 +57,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
 		}
-	case github.FetchCompletedMsg:
-		m.search.Repositories = msg.Repositories
+	case ui.FetchMsg:
 		fetchModel, fetchCmd := m.fetch.Update(msg)
-		m.fetch = fetchModel.(github.FetchingModel)
-		return m, tea.Batch(fetchCmd, m.search.Init())
-	case github.FetchMsg:
-		fetchModel, fetchCmd := m.fetch.Update(msg)
-		m.fetch = fetchModel.(github.FetchingModel)
+		m.fetch = fetchModel.(ui.FetchingModel)
+		if m.fetch.Status == ui.FetchStatusCompleted {
+			m.search.Repositories = m.fetch.Repositories
+			return m, m.search.Init()
+		}
 		return m, fetchCmd
-	case github.FetchFailedMsg:
-		fetchModel, fetchCmd := m.fetch.Update(msg)
-		m.fetch = fetchModel.(github.FetchingModel)
-		return m, fetchCmd
-	case github.SearchFinishedMsg:
+	case ui.SearchMsg:
 		searchModel, searchCmd := m.search.Update(msg)
-		m.search = searchModel.(github.SearchModel)
+		m.search = searchModel.(ui.SearchModel)
 		return m, searchCmd
 	case spinner.TickMsg:
-		if m.fetch.Status == github.FetchStatusLoading {
+		if m.fetch.Status == ui.FetchStatusLoading {
 			fetchModel, fetchCmd := m.fetch.Update(msg)
-			m.fetch = fetchModel.(github.FetchingModel)
+			m.fetch = fetchModel.(ui.FetchingModel)
 			return m, fetchCmd
 		}
 		if m.search.Loading {
 			searchModel, searchCmd := m.search.Update(msg)
-			m.search = searchModel.(github.SearchModel)
+			m.search = searchModel.(ui.SearchModel)
 			return m, searchCmd
 		}
 	}
@@ -89,5 +86,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	return fmt.Sprintf("%s\n%s", m.fetch.View(), m.search.View())
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s\n", m.fetch.View()))
+	if m.fetch.Status == ui.FetchStatusCompleted {
+		sb.WriteString(fmt.Sprintf("%s\n", m.search.View()))
+	}
+	return sb.String()
 }
