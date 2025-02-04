@@ -5,7 +5,7 @@ go 1.23.3
 require (
 	github.com/blevesearch/bleve/v2 v2.4.4
 	github.com/charmbracelet/bubbles v0.20.0
-	github.com/charmbracelet/bubbletea v1.2.4
+	github.com/charmbracelet/bubbletea v1.3.0
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/cli/go-gh/v2 v2.11.2
 	github.com/cli/shurcooL-graphql v0.0.4
@@ -34,7 +34,7 @@ require (
 	github.com/blevesearch/zapx/v14 v14.3.10 // indirect
 	github.com/blevesearch/zapx/v15 v15.3.16 // indirect
 	github.com/blevesearch/zapx/v16 v16.1.9-0.20241217210638-a0519e7caf3b // indirect
-	github.com/charmbracelet/x/ansi v0.5.2 // indirect
+	github.com/charmbracelet/x/ansi v0.8.0 // indirect
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/cli/safeexec v1.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -60,7 +60,7 @@ require (
 	github.com/thlib/go-timezone-local v0.0.0-20210907160436-ef149e42d28e // indirect
 	go.etcd.io/bbolt v1.3.7 // indirect
 	golang.org/x/sync v0.10.0 // indirect
-	golang.org/x/sys v0.28.0 // indirect
+	golang.org/x/sys v0.29.0 // indirect
 	golang.org/x/term v0.27.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
