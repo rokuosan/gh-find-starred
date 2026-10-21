@@ -4,7 +4,7 @@ go 1.23.3
 
 require (
 	github.com/blevesearch/bleve/v2 v2.4.4
-	github.com/charmbracelet/bubbles v0.20.0
+	github.com/charmbracelet/bubbles/v2 v2.2.1
 	github.com/charmbracelet/bubbletea v1.2.4
 	github.com/charmbracelet/lipgloss v1.0.0
 	github.com/cli/go-gh/v2 v2.11.2
