@@ -6,7 +6,7 @@ require (
 	github.com/blevesearch/bleve/v2 v2.5.0
 	github.com/charmbracelet/bubbles v0.21.1
 	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/charmbracelet/lipgloss v1.1.1-0.20250319133953-166f707985bc
+	github.com/charmbracelet/lipgloss/v2 v2.1.1
 	github.com/cli/go-gh/v2 v2.12.1
 	github.com/cli/shurcooL-graphql v0.0.4
 	github.com/spf13/cobra v1.10.2
