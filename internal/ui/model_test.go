@@ -12,16 +12,19 @@ import (
 )
 
 type stubService struct {
-	loadFn   func(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.FetchResult, error)
-	searchFn func(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error)
+	prepareFn func(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.IndexStatus, domain.IndexSearcher, error)
 }
 
-func (s *stubService) LoadRepositories(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.FetchResult, error) {
-	return s.loadFn(ctx, noCache, onProgress)
+func (s *stubService) Prepare(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.IndexStatus, domain.IndexSearcher, error) {
+	return s.prepareFn(ctx, noCache, onProgress)
 }
 
-func (s *stubService) SearchRepositories(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error) {
-	return s.searchFn(repos, query, limit)
+type stubIndexSearcher struct {
+	searchFn func(ctx context.Context, query string, limit int) ([]domain.SearchResult, error)
+}
+
+func (s *stubIndexSearcher) Search(ctx context.Context, query string, limit int) ([]domain.SearchResult, error) {
+	return s.searchFn(ctx, query, limit)
 }
 
 func TestModel_FullLifecycle_ProgressAndResults(t *testing.T) {
@@ -33,14 +36,8 @@ func TestModel_FullLifecycle_ProgressAndResults(t *testing.T) {
 		},
 	}
 
-	svc := &stubService{
-		loadFn: func(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.FetchResult, error) {
-			assert.False(t, noCache)
-			onProgress(domain.FetchProgress{FetchedCount: 1})
-			return domain.FetchResult{Repositories: repos}, nil
-		},
-		searchFn: func(gotRepos []domain.Repository, query string, limit int) ([]domain.SearchResult, error) {
-			assert.Equal(t, repos, gotRepos)
+	searcher := &stubIndexSearcher{
+		searchFn: func(ctx context.Context, query string, limit int) ([]domain.SearchResult, error) {
 			assert.Equal(t, "tui", query)
 			assert.Equal(t, 10, limit)
 			return []domain.SearchResult{
@@ -49,11 +46,18 @@ func TestModel_FullLifecycle_ProgressAndResults(t *testing.T) {
 		},
 	}
 
+	svc := &stubService{
+		prepareFn: func(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.IndexStatus, domain.IndexSearcher, error) {
+			assert.False(t, noCache)
+			onProgress(domain.FetchProgress{FetchedCount: 1})
+			return domain.IndexStatus{RepoCount: 1}, searcher, nil
+		},
+	}
+
 	m := NewModel(context.Background(), svc, Options{Query: "tui", Limit: 10})
 	assert.Contains(t, m.View().Content, "Fetching starred repositories: 0")
 
-	// Start loader goroutine and consume progress + done messages.
-	_ = m.startLoadCmd()()
+	_ = m.startPrepareCmd()()
 
 	msg1 := waitForEvent(m.ctx, m.events)()
 	next, cmd1 := m.Update(msg1)
@@ -70,8 +74,7 @@ func TestModel_FullLifecycle_ProgressAndResults(t *testing.T) {
 	assert.Contains(t, m.View().Content, "Searching...")
 	assert.NotContains(t, m.View().Content, "(error)")
 
-	// Execute searchCmd from the batch via searchCmd directly.
-	searchMsg := m.searchCmd(repos)()
+	searchMsg := m.searchCmd(m.searcher)()
 	next, quitCmd := m.Update(searchMsg)
 	m = next.(Model)
 	assert.Equal(t, StateDone, m.State())
@@ -79,7 +82,7 @@ func TestModel_FullLifecycle_ProgressAndResults(t *testing.T) {
 	assert.IsType(t, tea.QuitMsg{}, quitCmd())
 
 	view := m.View().Content
-	assert.Contains(t, view, "Fetched starred repositories: 1")
+	assert.Contains(t, view, "Fetched & indexed starred repositories: 1")
 	assert.Contains(t, view, "bubbletea")
 	assert.Contains(t, view, "https://github.com/charmbracelet/bubbletea")
 	assert.Contains(t, view, "A TUI framework")
@@ -88,40 +91,43 @@ func TestModel_FullLifecycle_ProgressAndResults(t *testing.T) {
 
 func TestModel_CachedAndWarningAndEmptyMatch(t *testing.T) {
 	warnErr := errors.New("permission denied")
+	searcher := &stubIndexSearcher{
+		searchFn: func(ctx context.Context, query string, limit int) ([]domain.SearchResult, error) {
+			return nil, nil
+		},
+	}
 	svc := &stubService{
-		loadFn: func(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.FetchResult, error) {
-			return domain.FetchResult{
-				Repositories: []domain.Repository{{Name: "repo"}},
+		prepareFn: func(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.IndexStatus, domain.IndexSearcher, error) {
+			return domain.IndexStatus{
+				RepoCount:    3,
 				FromCache:    true,
 				CacheWarning: warnErr,
-			}, nil
-		},
-		searchFn: func(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error) {
-			return nil, nil
+			}, searcher, nil
 		},
 	}
 
 	m := NewModel(context.Background(), svc, Options{Query: "missing", Limit: 5})
-	_ = m.startLoadCmd()()
+	_ = m.startPrepareCmd()()
 
 	next, _ := m.Update(waitForEvent(m.ctx, m.events)())
 	m = next.(Model)
-	next, _ = m.Update(m.searchCmd(m.fetchResult.Repositories)())
+	next, _ = m.Update(m.searchCmd(m.searcher)())
 	m = next.(Model)
 
 	assert.Equal(t, StateDone, m.State())
 	view := m.View().Content
+	assert.Contains(t, view, "Loaded starred repositories: 3")
 	assert.Contains(t, view, "(from cache)")
 	assert.Contains(t, view, "permission denied")
 	assert.Contains(t, view, `No repositories matched "missing".`)
 }
 
-func TestModel_FetchAndSearchErrors(t *testing.T) {
-	t.Run("fetch error", func(t *testing.T) {
+func TestModel_PrepareAndSearchErrors(t *testing.T) {
+	t.Run("prepare error", func(t *testing.T) {
 		wantErr := errors.New("graphql unavailable")
 		m := NewModel(context.Background(), &stubService{}, Options{Query: "go"})
 
-		next, quitCmd := m.Update(fetchDoneMsg{err: wantErr})
+		next, quitCmd := m.Update(prepareDoneMsg{err: wantErr})
 		m = next.(Model)
 		assert.Equal(t, StateError, m.State())
 		assert.ErrorIs(t, m.Err(), wantErr)

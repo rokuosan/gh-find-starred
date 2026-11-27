@@ -1,5 +1,7 @@
 package domain
 
+import "context"
+
 // Repository represents a starred GitHub repository and its README content.
 type Repository struct {
 	Name        string `json:"name"`
@@ -21,9 +23,9 @@ type FetchProgress struct {
 	FetchedCount int
 }
 
-// FetchResult contains loaded repositories and metadata about the load source.
-type FetchResult struct {
-	Repositories []Repository
+// IndexStatus describes the prepared repository index state.
+type IndexStatus struct {
+	RepoCount    int
 	FromCache    bool
 	CacheWarning error
 }
@@ -32,4 +34,9 @@ type FetchResult struct {
 type SearchResult struct {
 	Repository Repository
 	Score      float64
+}
+
+// IndexSearcher executes ranked repository searches against a prepared index.
+type IndexSearcher interface {
+	Search(ctx context.Context, query string, limit int) ([]SearchResult, error)
 }
