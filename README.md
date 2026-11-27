@@ -29,10 +29,11 @@ $ gh find-starred github
 ## Flags
 
 - `-h`, `--help`: Display help.
+- `-l`, `--limit`: Limit the number of search results displayed. The default is `10`.
+- `--no-cache`: Bypass the local repository cache and fetch fresh data from GitHub.
 
 ## Planned Flags (Not yet implemented)
 
-- `-l`, `--limit`: Limit the number of search results displayed. The default is 10.
 - `-o`, `--order`: Specify the order of search results. The default is `desc`.
 - `-s`, `--sort`: Specify the sort field for search results. The default is `starred_at`.
 - `-t`, `--type`: Specify the type of repositories in the search results. The default is `all`.
