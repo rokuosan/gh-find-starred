@@ -32,6 +32,10 @@ $ gh find-starred github
 - `-l`, `--limit`: Limit the number of search results displayed. The default is `10`.
 - `--no-cache`: Bypass the local repository cache and fetch fresh data from GitHub.
 
+## Caching
+
+Starred repository search indexes are persisted locally as a Bleve index under `gh`'s cache directory, isolated by GitHub host and authenticated user (`<CacheDir>/gh-find-starred/<host>/<user>/`), with a 24-hour TTL (`meta.json`). Pass `--no-cache` to bypass the cache and rebuild the index from GitHub.
+
 ## Planned Flags (Not yet implemented)
 
 - `-o`, `--order`: Specify the order of search results. The default is `desc`.

@@ -11,19 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type stubStore struct {
-	getFn func() ([]domain.Repository, error)
-	setFn func([]domain.Repository) error
-}
-
-func (s *stubStore) Get() ([]domain.Repository, error) {
-	return s.getFn()
-}
-
-func (s *stubStore) Set(data []domain.Repository) error {
-	return s.setFn(data)
-}
-
 type stubFetcher struct {
 	fetchFn func(ctx context.Context, onProgress func(domain.FetchProgress)) ([]domain.Repository, error)
 }
@@ -32,16 +19,34 @@ func (f *stubFetcher) FetchStarredRepositories(ctx context.Context, onProgress f
 	return f.fetchFn(ctx, onProgress)
 }
 
+type stubIndexStore struct {
+	loadFn     func(ctx context.Context) (domain.IndexSearcher, int, error)
+	saveFn     func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error)
+	fallbackFn func(repos []domain.Repository) domain.IndexSearcher
+}
+
+func (s *stubIndexStore) Load(ctx context.Context) (domain.IndexSearcher, int, error) {
+	return s.loadFn(ctx)
+}
+
+func (s *stubIndexStore) Save(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+	return s.saveFn(ctx, repos)
+}
+
+func (s *stubIndexStore) Fallback(repos []domain.Repository) domain.IndexSearcher {
+	return s.fallbackFn(repos)
+}
+
 type stubSearcher struct {
-	searchFn func(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error)
+	results []domain.SearchResult
 }
 
-func (s *stubSearcher) Search(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error) {
-	return s.searchFn(repos, query, limit)
+func (s *stubSearcher) Search(ctx context.Context, query string, limit int) ([]domain.SearchResult, error) {
+	return s.results, nil
 }
 
-func TestService_LoadRepositories_CacheHit(t *testing.T) {
-	cached := []domain.Repository{{Name: "cached-repo", URL: "https://github.com/a/cached-repo"}}
+func TestService_Prepare_CacheHit(t *testing.T) {
+	cachedSearcher := &stubSearcher{results: []domain.SearchResult{{Repository: domain.Repository{Name: "cached"}}}}
 	fetched := false
 
 	svc := NewService(
@@ -51,27 +56,30 @@ func TestService_LoadRepositories_CacheHit(t *testing.T) {
 				return nil, nil
 			},
 		},
-		&stubStore{
-			getFn: func() ([]domain.Repository, error) { return cached, nil },
-			setFn: func(r []domain.Repository) error {
-				t.Fatal("Set should not be called on cache hit")
-				return nil
+		&stubIndexStore{
+			loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+				return cachedSearcher, 42, nil
+			},
+			saveFn: func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+				t.Fatal("Save should not be called on cache hit")
+				return nil, nil
 			},
 		},
-		nil,
 	)
 
-	res, err := svc.LoadRepositories(context.Background(), false, nil)
+	status, searcher, err := svc.Prepare(context.Background(), false, nil)
 	require.NoError(t, err)
-	assert.True(t, res.FromCache)
-	assert.NoError(t, res.CacheWarning)
-	assert.Equal(t, cached, res.Repositories)
+	assert.True(t, status.FromCache)
+	assert.Equal(t, 42, status.RepoCount)
+	assert.NoError(t, status.CacheWarning)
+	assert.Same(t, cachedSearcher, searcher)
 	assert.False(t, fetched)
 }
 
-func TestService_LoadRepositories_NoCacheBypass(t *testing.T) {
-	fresh := []domain.Repository{{Name: "fresh-repo", URL: "https://github.com/a/fresh-repo"}}
-	var stored []domain.Repository
+func TestService_Prepare_NoCacheBypass(t *testing.T) {
+	fresh := []domain.Repository{{Name: "fresh", URL: "https://github.com/a/fresh"}}
+	savedSearcher := &stubSearcher{}
+	var savedRepos []domain.Repository
 
 	svc := NewService(
 		&stubFetcher{
@@ -79,38 +87,38 @@ func TestService_LoadRepositories_NoCacheBypass(t *testing.T) {
 				return fresh, nil
 			},
 		},
-		&stubStore{
-			getFn: func() ([]domain.Repository, error) {
-				t.Fatal("Get should not be called when noCache is true")
-				return nil, nil
+		&stubIndexStore{
+			loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+				t.Fatal("Load should not be called when noCache is true")
+				return nil, 0, nil
 			},
-			setFn: func(r []domain.Repository) error {
-				stored = r
-				return nil
+			saveFn: func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+				savedRepos = repos
+				return savedSearcher, nil
 			},
 		},
-		nil,
 	)
 
-	res, err := svc.LoadRepositories(context.Background(), true, nil)
+	status, searcher, err := svc.Prepare(context.Background(), true, nil)
 	require.NoError(t, err)
-	assert.False(t, res.FromCache)
-	assert.Equal(t, fresh, res.Repositories)
-	assert.Equal(t, fresh, stored)
+	assert.False(t, status.FromCache)
+	assert.Equal(t, 1, status.RepoCount)
+	assert.Equal(t, fresh, savedRepos)
+	assert.Same(t, savedSearcher, searcher)
 }
 
-func TestService_LoadRepositories_FallbackOnCacheErrors(t *testing.T) {
+func TestService_Prepare_FallbackOnLoadErrors(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		cacheErr error
+		name    string
+		loadErr error
 	}{
-		{name: "miss", cacheErr: cache.ErrCacheMiss},
-		{name: "expired", cacheErr: cache.ErrCacheExpired},
-		{name: "corrupt", cacheErr: errors.New("corrupt json")},
+		{name: "miss", loadErr: cache.ErrCacheMiss},
+		{name: "expired", loadErr: cache.ErrCacheExpired},
+		{name: "corrupt", loadErr: errors.New("corrupt index")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fresh := []domain.Repository{{Name: "repo", URL: "https://github.com/a/repo"}}
-			var saved []domain.Repository
+			savedSearcher := &stubSearcher{}
 			var progressCount int
 
 			svc := NewService(
@@ -122,31 +130,32 @@ func TestService_LoadRepositories_FallbackOnCacheErrors(t *testing.T) {
 						return fresh, nil
 					},
 				},
-				&stubStore{
-					getFn: func() ([]domain.Repository, error) { return nil, tc.cacheErr },
-					setFn: func(r []domain.Repository) error {
-						saved = r
-						return nil
+				&stubIndexStore{
+					loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+						return nil, 0, tc.loadErr
+					},
+					saveFn: func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+						return savedSearcher, nil
 					},
 				},
-				nil,
 			)
 
-			res, err := svc.LoadRepositories(context.Background(), false, func(p domain.FetchProgress) {
+			status, searcher, err := svc.Prepare(context.Background(), false, func(p domain.FetchProgress) {
 				progressCount = p.FetchedCount
 			})
 			require.NoError(t, err)
-			assert.False(t, res.FromCache)
+			assert.False(t, status.FromCache)
+			assert.Equal(t, 1, status.RepoCount)
 			assert.Equal(t, 1, progressCount)
-			assert.Equal(t, fresh, res.Repositories)
-			assert.Equal(t, fresh, saved)
+			assert.Same(t, savedSearcher, searcher)
 		})
 	}
 }
 
-func TestService_LoadRepositories_CacheWriteWarningIsNonFatal(t *testing.T) {
+func TestService_Prepare_SaveWarningUsesFallback(t *testing.T) {
 	fresh := []domain.Repository{{Name: "repo", URL: "https://github.com/a/repo"}}
 	writeErr := errors.New("disk full")
+	fallbackSearcher := &stubSearcher{}
 
 	svc := NewService(
 		&stubFetcher{
@@ -154,52 +163,93 @@ func TestService_LoadRepositories_CacheWriteWarningIsNonFatal(t *testing.T) {
 				return fresh, nil
 			},
 		},
-		&stubStore{
-			getFn: func() ([]domain.Repository, error) { return nil, cache.ErrCacheMiss },
-			setFn: func(r []domain.Repository) error { return writeErr },
+		&stubIndexStore{
+			loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+				return nil, 0, cache.ErrCacheMiss
+			},
+			saveFn: func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+				return nil, writeErr
+			},
+			fallbackFn: func(repos []domain.Repository) domain.IndexSearcher {
+				assert.Equal(t, fresh, repos)
+				return fallbackSearcher
+			},
 		},
-		nil,
 	)
 
-	res, err := svc.LoadRepositories(context.Background(), false, nil)
+	status, searcher, err := svc.Prepare(context.Background(), false, nil)
 	require.NoError(t, err)
-	assert.Equal(t, fresh, res.Repositories)
-	assert.ErrorIs(t, res.CacheWarning, writeErr)
+	assert.Equal(t, 1, status.RepoCount)
+	assert.False(t, status.FromCache)
+	assert.ErrorIs(t, status.CacheWarning, writeErr)
+	assert.Same(t, fallbackSearcher, searcher)
 }
 
-func TestService_LoadRepositories_FetchError(t *testing.T) {
-	fetchErr := errors.New("network failure")
-	svc := NewService(
-		&stubFetcher{
-			fetchFn: func(ctx context.Context, onProgress func(domain.FetchProgress)) ([]domain.Repository, error) {
-				return nil, fetchErr
+func TestService_Prepare_ContextCancelAndFetchError(t *testing.T) {
+	t.Run("load canceled propagates without fetching", func(t *testing.T) {
+		svc := NewService(
+			&stubFetcher{
+				fetchFn: func(ctx context.Context, onProgress func(domain.FetchProgress)) ([]domain.Repository, error) {
+					t.Fatal("fetcher should not be called when Load is canceled")
+					return nil, nil
+				},
 			},
-		},
-		&stubStore{
-			getFn: func() ([]domain.Repository, error) { return nil, cache.ErrCacheMiss },
-			setFn: func(r []domain.Repository) error {
-				t.Fatal("Set should not be called on fetch error")
-				return nil
+			&stubIndexStore{
+				loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+					return nil, 0, context.Canceled
+				},
 			},
-		},
-		nil,
-	)
+		)
 
-	_, err := svc.LoadRepositories(context.Background(), false, nil)
-	assert.ErrorIs(t, err, fetchErr)
-}
-
-func TestService_SearchRepositories(t *testing.T) {
-	want := []domain.SearchResult{{Repository: domain.Repository{Name: "hit"}, Score: 1.5}}
-	svc := NewService(nil, nil, &stubSearcher{
-		searchFn: func(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error) {
-			assert.Equal(t, "query", query)
-			assert.Equal(t, 5, limit)
-			return want, nil
-		},
+		_, _, err := svc.Prepare(context.Background(), false, nil)
+		assert.ErrorIs(t, err, context.Canceled)
 	})
 
-	got, err := svc.SearchRepositories([]domain.Repository{{Name: "hit"}}, "query", 5)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
+	t.Run("save canceled propagates without fallback", func(t *testing.T) {
+		svc := NewService(
+			&stubFetcher{
+				fetchFn: func(ctx context.Context, onProgress func(domain.FetchProgress)) ([]domain.Repository, error) {
+					return []domain.Repository{{Name: "a"}}, nil
+				},
+			},
+			&stubIndexStore{
+				loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+					return nil, 0, cache.ErrCacheMiss
+				},
+				saveFn: func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+					return nil, context.Canceled
+				},
+				fallbackFn: func(repos []domain.Repository) domain.IndexSearcher {
+					t.Fatal("Fallback should not be called on cancel")
+					return nil
+				},
+			},
+		)
+
+		_, _, err := svc.Prepare(context.Background(), false, nil)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("fetch error", func(t *testing.T) {
+		fetchErr := errors.New("network failure")
+		svc := NewService(
+			&stubFetcher{
+				fetchFn: func(ctx context.Context, onProgress func(domain.FetchProgress)) ([]domain.Repository, error) {
+					return nil, fetchErr
+				},
+			},
+			&stubIndexStore{
+				loadFn: func(ctx context.Context) (domain.IndexSearcher, int, error) {
+					return nil, 0, cache.ErrCacheMiss
+				},
+				saveFn: func(ctx context.Context, repos []domain.Repository) (domain.IndexSearcher, error) {
+					t.Fatal("Save should not be called on fetch error")
+					return nil, nil
+				},
+			},
+		)
+
+		_, _, err := svc.Prepare(context.Background(), false, nil)
+		assert.ErrorIs(t, err, fetchErr)
+	})
 }

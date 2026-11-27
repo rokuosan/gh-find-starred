@@ -14,8 +14,7 @@ import (
 
 // Service defines the application operations required by the TUI.
 type Service interface {
-	LoadRepositories(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.FetchResult, error)
-	SearchRepositories(repos []domain.Repository, query string, limit int) ([]domain.SearchResult, error)
+	Prepare(ctx context.Context, noCache bool, onProgress func(domain.FetchProgress)) (domain.IndexStatus, domain.IndexSearcher, error)
 }
 
 // Options configures the TUI session.
@@ -40,9 +39,10 @@ type fetchProgressMsg struct {
 	fetchedCount int
 }
 
-type fetchDoneMsg struct {
-	result domain.FetchResult
-	err    error
+type prepareDoneMsg struct {
+	status   domain.IndexStatus
+	searcher domain.IndexSearcher
+	err      error
 }
 
 type searchDoneMsg struct {
@@ -61,7 +61,8 @@ type Model struct {
 	state        State
 	spinner      spinner.Model
 	fetchedCount int
-	fetchResult  domain.FetchResult
+	indexStatus  domain.IndexStatus
+	searcher     domain.IndexSearcher
 	results      []domain.SearchResult
 	err          error
 }
@@ -92,16 +93,16 @@ func newSpinner(kind spinner.Spinner, style lipgloss.Style) spinner.Model {
 	return s
 }
 
-// Init starts the spinner and asynchronous repository loading.
+// Init starts the spinner and asynchronous repository index preparation.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
-		m.startLoadCmd(),
+		m.startPrepareCmd(),
 		waitForEvent(m.ctx, m.events),
 	)
 }
 
-func (m Model) startLoadCmd() tea.Cmd {
+func (m Model) startPrepareCmd() tea.Cmd {
 	svc := m.svc
 	ctx := m.ctx
 	noCache := m.opts.NoCache
@@ -109,17 +110,17 @@ func (m Model) startLoadCmd() tea.Cmd {
 
 	return func() tea.Msg {
 		if svc == nil {
-			sendFinal(ctx, events, fetchDoneMsg{err: errors.New("application service is not configured")})
+			sendFinal(ctx, events, prepareDoneMsg{err: errors.New("application service is not configured")})
 			return nil
 		}
 
-		res, err := svc.LoadRepositories(ctx, noCache, func(p domain.FetchProgress) {
+		status, searcher, err := svc.Prepare(ctx, noCache, func(p domain.FetchProgress) {
 			select {
 			case events <- fetchProgressMsg{fetchedCount: p.FetchedCount}:
 			default:
 			}
 		})
-		sendFinal(ctx, events, fetchDoneMsg{result: res, err: err})
+		sendFinal(ctx, events, prepareDoneMsg{status: status, searcher: searcher, err: err})
 		return nil
 	}
 }
@@ -142,16 +143,16 @@ func waitForEvent(ctx context.Context, ch <-chan tea.Msg) tea.Cmd {
 	}
 }
 
-func (m Model) searchCmd(repos []domain.Repository) tea.Cmd {
-	svc := m.svc
+func (m Model) searchCmd(searcher domain.IndexSearcher) tea.Cmd {
+	ctx := m.ctx
 	query := m.opts.Query
 	limit := m.opts.Limit
 
 	return func() tea.Msg {
-		if svc == nil {
-			return searchDoneMsg{err: errors.New("application service is not configured")}
+		if searcher == nil {
+			return searchDoneMsg{err: errors.New("search index is not configured")}
 		}
-		results, err := svc.SearchRepositories(repos, query, limit)
+		results, err := searcher.Search(ctx, query, limit)
 		return searchDoneMsg{results: results, err: err}
 	}
 }
@@ -184,7 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitForEvent(m.ctx, m.events)
 
-	case fetchDoneMsg:
+	case prepareDoneMsg:
 		if m.state == StateCanceled {
 			return m, nil
 		}
@@ -199,14 +200,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		m.fetchResult = msg.result
-		m.fetchedCount = len(msg.result.Repositories)
+		m.indexStatus = msg.status
+		m.searcher = msg.searcher
+		m.fetchedCount = msg.status.RepoCount
 		m.state = StateSearching
 		m.spinner = newSpinner(spinner.Points, m.styles.Spinner)
 
 		return m, tea.Batch(
 			m.spinner.Tick,
-			m.searchCmd(msg.result.Repositories),
+			m.searchCmd(msg.searcher),
 		)
 
 	case searchDoneMsg:
@@ -214,6 +216,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) && m.ctx.Err() != nil {
+				m.state = StateCanceled
+				return m, tea.Quit
+			}
 			m.state = StateError
 			m.err = msg.err
 			m.cancel()
@@ -238,11 +244,11 @@ func (m Model) View() tea.View {
 		sb.WriteString(fmt.Sprintf("%s Fetching starred repositories: %d\n", m.spinner.View(), m.fetchedCount))
 
 	case StateSearching:
-		sb.WriteString(m.renderFetchSummary())
+		sb.WriteString(m.renderIndexSummary())
 		sb.WriteString(fmt.Sprintf("%s Searching...\n", m.spinner.View()))
 
 	case StateDone:
-		sb.WriteString(m.renderFetchSummary())
+		sb.WriteString(m.renderIndexSummary())
 		if len(m.results) == 0 {
 			sb.WriteString(m.styles.Muted.Render(fmt.Sprintf("No repositories matched %q.\n", m.opts.Query)))
 		} else {
@@ -268,18 +274,24 @@ func (m Model) View() tea.View {
 	return tea.NewView(sb.String())
 }
 
-func (m Model) renderFetchSummary() string {
+func (m Model) renderIndexSummary() string {
 	var sb strings.Builder
-	summary := fmt.Sprintf("%s Fetched starred repositories: %d",
-		m.styles.Success.Render("✓"),
-		len(m.fetchResult.Repositories),
-	)
-	if m.fetchResult.FromCache {
-		summary += " " + m.styles.Muted.Render("(from cache)")
+	var summary string
+	if m.indexStatus.FromCache {
+		summary = fmt.Sprintf("%s Loaded starred repositories: %d %s",
+			m.styles.Success.Render("✓"),
+			m.indexStatus.RepoCount,
+			m.styles.Muted.Render("(from cache)"),
+		)
+	} else {
+		summary = fmt.Sprintf("%s Fetched & indexed starred repositories: %d",
+			m.styles.Success.Render("✓"),
+			m.indexStatus.RepoCount,
+		)
 	}
 	sb.WriteString(summary + "\n")
-	if m.fetchResult.CacheWarning != nil {
-		sb.WriteString(m.styles.Warning.Render(fmt.Sprintf("⚠ Warning: failed to update cache: %v", m.fetchResult.CacheWarning)) + "\n")
+	if m.indexStatus.CacheWarning != nil {
+		sb.WriteString(m.styles.Warning.Render(fmt.Sprintf("⚠ Warning: failed to persist cache: %v", m.indexStatus.CacheWarning)) + "\n")
 	}
 	return sb.String()
 }

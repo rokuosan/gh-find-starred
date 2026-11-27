@@ -12,7 +12,6 @@ import (
 	"github.com/cli/go-gh/v2/pkg/config"
 	"github.com/rokuosan/gh-find-starred/internal/app"
 	"github.com/rokuosan/gh-find-starred/internal/cache"
-	"github.com/rokuosan/gh-find-starred/internal/domain"
 	"github.com/rokuosan/gh-find-starred/internal/github"
 	"github.com/rokuosan/gh-find-starred/internal/search"
 	"github.com/rokuosan/gh-find-starred/internal/ui"
@@ -45,10 +44,11 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 
-			cachePath := filepath.Join(config.CacheDir(), "gh-find-starred", "starred_repositories.json")
-			store := cache.NewFileStore[[]domain.Repository](cachePath, defaultCacheTTL)
-			searcher := search.NewBleveSearcher()
-			svc := app.NewService(client, store, searcher)
+			scope := github.ResolveScope()
+			scopeDir := filepath.Join(config.CacheDir(), "gh-find-starred", scope.CacheSubdir())
+			metaStore := cache.NewFileStore[search.IndexMeta](filepath.Join(scopeDir, "meta.json"), defaultCacheTTL)
+			indexStore := search.NewDiskStore(scopeDir, metaStore)
+			svc := app.NewService(client, indexStore)
 
 			model := ui.NewModel(cmd.Context(), svc, ui.Options{
 				Query:   strings.Join(args, " "),
