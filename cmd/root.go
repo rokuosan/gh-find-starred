@@ -1,95 +1,85 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/rokuosan/gh-find-starred/pkg/api"
-	"github.com/rokuosan/gh-find-starred/pkg/ui"
+	tea "charm.land/bubbletea/v2"
+	"github.com/cli/go-gh/v2/pkg/config"
+	"github.com/rokuosan/gh-find-starred/internal/app"
+	"github.com/rokuosan/gh-find-starred/internal/cache"
+	"github.com/rokuosan/gh-find-starred/internal/domain"
+	"github.com/rokuosan/gh-find-starred/internal/github"
+	"github.com/rokuosan/gh-find-starred/internal/search"
+	"github.com/rokuosan/gh-find-starred/internal/ui"
 	"github.com/spf13/cobra"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "gh-find-starred",
-	Short: "gh-find-starred is a GitHub CLI extension to find your starred repositories.",
-	Long:  ``,
-	Args:  cobra.MinimumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		p := tea.NewProgram(initialModel(args))
-		if _, err := p.Run(); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	},
+const defaultCacheTTL = 24 * time.Hour
+
+var errDisplayed = errors.New("error already displayed by TUI")
+
+func newRootCmd() *cobra.Command {
+	var (
+		limit   int
+		noCache bool
+	)
+
+	rootCmd := &cobra.Command{
+		Use:           "gh-find-starred [flags] <words...>",
+		Short:         "gh-find-starred is a GitHub CLI extension to find your starred repositories.",
+		Args:          cobra.MinimumNArgs(1),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if limit < 1 {
+				return fmt.Errorf("--limit must be at least 1 (got %d)", limit)
+			}
+			cmd.SilenceUsage = true
+
+			client, err := github.NewDefaultClient()
+			if err != nil {
+				return err
+			}
+
+			cachePath := filepath.Join(config.CacheDir(), "gh-find-starred", "starred_repositories.json")
+			store := cache.NewFileStore[[]domain.Repository](cachePath, defaultCacheTTL)
+			searcher := search.NewBleveSearcher()
+			svc := app.NewService(client, store, searcher)
+
+			model := ui.NewModel(cmd.Context(), svc, ui.Options{
+				Query:   strings.Join(args, " "),
+				Limit:   limit,
+				NoCache: noCache,
+			})
+
+			finalModel, err := tea.NewProgram(model, tea.WithContext(cmd.Context())).Run()
+			if err != nil {
+				return err
+			}
+			if fm, ok := finalModel.(ui.Model); ok && fm.Err() != nil {
+				return errDisplayed
+			}
+
+			return nil
+		},
+	}
+
+	rootCmd.Flags().IntVarP(&limit, "limit", "l", 10, "Limit the number of search results displayed")
+	rootCmd.Flags().BoolVar(&noCache, "no-cache", false, "Bypass the local repository cache and fetch from GitHub")
+
+	return rootCmd
 }
 
+// Execute runs the root CLI command.
 func Execute() {
-	cobra.CheckErr(rootCmd.Execute())
-}
-
-func init() {}
-
-type model struct {
-	fetch        ui.FetchingModel
-	search       ui.SearchModel
-	repositories api.GitHubRepositories
-}
-
-func initialModel(args []string) model {
-	// モデルを初期化
-	return model{
-		fetch:  ui.NewDefaultFetchingModel(),
-		search: ui.NewDefaultSearchModel(args),
+	if err := newRootCmd().Execute(); err != nil {
+		if !errors.Is(err, errDisplayed) {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(1)
 	}
-}
-
-func (m model) Init() tea.Cmd {
-	return m.fetch.Init()
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			return m, tea.Quit
-		}
-	case ui.FetchMsg:
-		fetchModel, fetchCmd := m.fetch.Update(msg)
-		m.fetch = fetchModel.(ui.FetchingModel)
-		if m.fetch.Status == ui.FetchStatusCompleted {
-			m.search.Repositories = m.fetch.Repositories
-			return m, m.search.Init()
-		}
-		return m, fetchCmd
-	case ui.SearchMsg:
-		searchModel, searchCmd := m.search.Update(msg)
-		m.search = searchModel.(ui.SearchModel)
-		return m, searchCmd
-	case spinner.TickMsg:
-		if m.fetch.Status == ui.FetchStatusLoading {
-			fetchModel, fetchCmd := m.fetch.Update(msg)
-			m.fetch = fetchModel.(ui.FetchingModel)
-			return m, fetchCmd
-		}
-		if m.search.Loading {
-			searchModel, searchCmd := m.search.Update(msg)
-			m.search = searchModel.(ui.SearchModel)
-			return m, searchCmd
-		}
-	}
-
-	return m, nil
-}
-
-func (m model) View() string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s\n", m.fetch.View()))
-	if m.fetch.Status == ui.FetchStatusCompleted {
-		sb.WriteString(fmt.Sprintf("%s\n", m.search.View()))
-	}
-	return sb.String()
 }

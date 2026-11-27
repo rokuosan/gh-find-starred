@@ -1,111 +1,132 @@
 package cache
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"time"
-
-	"github.com/rokuosan/gh-find-starred/pkg/api"
 )
 
-type CacheController interface {
-	Get(key string) (interface{}, error)
-	Cache(key string, data interface{}) error
+var (
+	// ErrCacheMiss indicates no cache entry exists at the configured location.
+	ErrCacheMiss = errors.New("cache miss")
+	// ErrCacheExpired indicates the cached entry has exceeded its TTL.
+	ErrCacheExpired = errors.New("cache expired")
+)
+
+// Store defines generic typed cache persistence operations.
+type Store[T any] interface {
+	Get() (T, error)
+	Set(data T) error
 }
 
-type PeriodicalCache struct {
-	Period time.Duration
-	Path   string
-}
+// Option configures a FileStore.
+type Option[T any] func(*FileStore[T])
 
-type PeriodicalCacheData struct {
-	ExpiresAt string        `json:"expires_at"`
-	CreatedAt string        `json:"created_at"`
-	Data      []interface{} `json:"data"`
-}
-
-func NewPeriodicalCache(path string, period time.Duration) *PeriodicalCache {
-	return &PeriodicalCache{
-		Period: period,
-		Path:   path,
+// WithClock injects a custom clock function, primarily for deterministic testing.
+func WithClock[T any](fn func() time.Time) Option[T] {
+	return func(s *FileStore[T]) {
+		if fn != nil {
+			s.now = fn
+		}
 	}
 }
 
-func (c *PeriodicalCache) Get(key string) (interface{}, error) {
-
-	return nil, nil
+type entry[T any] struct {
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Data      T         `json:"data"`
 }
 
-func (c *PeriodicalCache) Cache(key string, data interface{}) error {
-	now := time.Now().Format(time.RFC3339)
-	expiresAt := time.Now().Add(c.Period).Format(time.RFC3339)
-	cacheData := PeriodicalCacheData{
-		ExpiresAt: expiresAt,
-		CreatedAt: now,
-		Data:      []interface{}{data},
-	}
+// FileStore persists JSON-encoded typed cache entries on the local filesystem
+// with TTL validation and atomic writes.
+type FileStore[T any] struct {
+	path string
+	ttl  time.Duration
+	now  func() time.Time
+}
 
-	jsonData, err := c.toJSON(cacheData)
+// NewFileStore constructs a FileStore writing to path with the given TTL.
+func NewFileStore[T any](path string, ttl time.Duration, opts ...Option[T]) *FileStore[T] {
+	s := &FileStore[T]{
+		path: path,
+		ttl:  ttl,
+		now:  time.Now,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// Get reads and validates the cached value, returning ErrCacheMiss or ErrCacheExpired
+// when no valid fresh entry is available.
+func (s *FileStore[T]) Get() (T, error) {
+	var zero T
+
+	f, err := os.Open(s.path)
 	if err != nil {
-		return err
-	}
-
-	file, err := os.Create(c.Path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	return c.write(jsonData, file)
-}
-
-func (c *PeriodicalCache) toJSON(data PeriodicalCacheData) ([]byte, error) {
-	buffer := bytes.NewBuffer([]byte{})
-	encoder := json.NewEncoder(buffer)
-	err := encoder.Encode(data)
-	if err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
-}
-
-func (c *PeriodicalCache) write(data []byte, writer io.Writer) error {
-	_, err := writer.Write(data)
-	return err
-}
-
-type CacheData struct {
-	ExpiresAt string        `json:"expires_at"`
-	CreatedAt string        `json:"created_at"`
-	Data      []interface{} `json:"data"`
-}
-
-func Cache(path string, data api.GitHubRepositories) error {
-	now := time.Now().Format(time.RFC3339)
-	expiresAt := time.Now().Add(time.Hour * 24).Format(time.RFC3339)
-	cacheData := CacheData{
-		ExpiresAt: expiresAt,
-		CreatedAt: now,
-		Data:      make([]interface{}, len(data)),
-	}
-	for i, d := range data {
-		cacheData.Data[i] = d
-	}
-
-	// ファイルを作成
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+		if errors.Is(err, os.ErrNotExist) {
+			return zero, ErrCacheMiss
+		}
+		return zero, fmt.Errorf("open cache file: %w", err)
 	}
 	defer f.Close()
 
-	// ファイルに書き込む
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(cacheData); err != nil {
-		return err
+	var e entry[T]
+	if err := json.NewDecoder(f).Decode(&e); err != nil {
+		return zero, fmt.Errorf("decode cache file: %w", err)
+	}
+	if e.ExpiresAt.IsZero() {
+		return zero, errors.New("invalid cache file: missing expires_at")
+	}
+	if !s.now().Before(e.ExpiresAt) {
+		return zero, ErrCacheExpired
 	}
 
+	return e.Data, nil
+}
+
+// Set writes data atomically to disk using a temporary file and rename.
+func (s *FileStore[T]) Set(data T) error {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create cache directory: %w", err)
+	}
+
+	now := s.now().UTC()
+	e := entry[T]{
+		CreatedAt: now,
+		ExpiresAt: now.Add(s.ttl),
+		Data:      data,
+	}
+
+	tmp, err := os.CreateTemp(dir, ".cache-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp cache file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := json.NewEncoder(tmp).Encode(e); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("encode cache file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp cache file: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("rename cache file: %w", err)
+	}
+
+	cleanup = false
 	return nil
 }
